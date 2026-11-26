@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gemini 宽屏宽度调节</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="panel">
+    <div class="header">
+      <div class="title-wrap">
+        <img src="icons/icon48.png" alt="icon" class="logo" />
+        <span class="title">Gemini 宽屏模式</span>
+      </div>
+      <label class="switch" title="开启或关闭宽屏模式">
+        <input type="checkbox" id="enableToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="control-card" id="controlCard">
+      <div class="control-header">
+        <span class="label">
+          <span class="badge-icon">↔</span>
+          宽屏 宽度：<strong id="widthValue">80%</strong>
+        </span>
+        <button type="button" id="resetBtn" class="reset-btn">重置</button>
+      </div>
+
+      <input
+        type="range"
+        id="widthRange"
+        min="40"
+        max="100"
+        step="1"
+        value="80"
+        aria-label="宽屏宽度百分比"
+      />
+
+      <div class="scale-labels">
+        <span>40%</span>
+        <span>70%</span>
+        <span>100%</span>
+      </div>
+
+      <div class="presets">
+        <button type="button" class="preset-btn" data-width="60">60%</button>
+        <button type="button" class="preset-btn" data-width="75">75%</button>
+        <button type="button" class="preset-btn" data-width="85">85%</button>
+        <button type="button" class="preset-btn" data-width="95">95%</button>
+      </div>
+    </div>
+
+    <div class="option-row">
+      <span class="option-label">表格文字居中</span>
+      <label class="switch switch-sm" title="让回答中的表格内容居中显示">
+        <input type="checkbox" id="centerTableToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="option-row">
+      <span class="option-label">表格列宽按字数智能分配</span>
+      <label class="switch switch-sm" title="文字少的列紧凑显示，文字多的列自动分到更宽空间">
+        <input type="checkbox" id="smartTableColsToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="option-row">
+      <span class="option-label">输入框自动隐藏（贴底唤出）</span>
+      <label class="switch switch-sm" title="阅读时自动收起底部输入框，鼠标移到底部细线处自动弹出">
+        <input type="checkbox" id="autoHideInputToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="option-row">
+      <span class="option-label">左侧缩略栏自动隐藏（展开常驻）</span>
+      <label class="switch switch-sm" title="左侧栏缩略成窄条时自动隐藏，鼠标移到左边缘弹出；展开完整侧边栏时自动常驻">
+        <input type="checkbox" id="autoHideSidebarToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="footer" id="statusText">拖动滑块可实时调整 Gemini 回答宽度</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
