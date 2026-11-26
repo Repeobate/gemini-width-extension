@@ -1,5 +1,5 @@
 (() => {
-  const INSTANCE_VERSION = '2.3.5';
+  const INSTANCE_VERSION = '2.3.6';
   if (window.__GWC_INSTANCE_VERSION__ === INSTANCE_VERSION) return;
   window.__GWC_INSTANCE_VERSION__ = INSTANCE_VERSION;
 
@@ -608,12 +608,16 @@
     return Math.min(maxLen, 28);
   }
 
+  function getTableHost(table) {
+    return table.closest('table-block, .table-block, .table-block-component') || table;
+  }
+
   function clearAllSmartCols() {
     const styleEl = document.getElementById(TABLE_COL_STYLE_ID);
     if (styleEl) styleEl.remove();
-    const tables = document.querySelectorAll('table[data-gwc-tid]');
-    for (const table of tables) {
-      delete table.dataset.gwcTid;
+    const hosts = document.querySelectorAll('[data-gwc-tid]');
+    for (const host of hosts) {
+      delete host.dataset.gwcTid;
     }
   }
 
@@ -627,7 +631,7 @@
     let css = '';
     for (const { id, widths } of tableWidthCache.values()) {
       for (let i = 0; i < widths.length; i++) {
-        css += `table[data-gwc-tid="${id}"] tr:first-child > :nth-child(${i + 1}) { width: ${widths[i]}% !important; }\n`;
+        css += `[data-gwc-tid="${id}"] tr:first-child > :nth-child(${i + 1}) { width: ${widths[i]}% !important; }\n`;
       }
     }
 
@@ -744,10 +748,10 @@
 
   function getTableCacheKey(table) {
     const rows = table.rows;
-    if (!rows || rows.length < 2) return '';
-    const r0 = (rows[0].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    const r1 = (rows[1].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    return `${rows[0].cells.length}|${r0}|${r1}`;
+    if (!rows || rows.length < 1) return '';
+    const r0 = (rows[0].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!r0) return '';
+    return `${rows[0].cells.length}|${r0}`;
   }
 
   function isTableCompleted(table) {
@@ -792,12 +796,13 @@
     let cssUpdated = false;
 
     for (const table of tables) {
+      const host = getTableHost(table);
       // 已锁定过的表格不再重复计算，彻底杜绝后续流式输出干扰前面的表格
-      if (table.dataset.gwcTid) continue;
+      if (host.dataset.gwcTid) continue;
 
       const cacheKey = getTableCacheKey(table);
       if (cacheKey && tableWidthCache.has(cacheKey)) {
-        table.dataset.gwcTid = tableWidthCache.get(cacheKey).id;
+        host.dataset.gwcTid = tableWidthCache.get(cacheKey).id;
         continue;
       }
 
@@ -811,7 +816,7 @@
       if (!widths) continue;
 
       const id = `t${++tableIdSeq}`;
-      table.dataset.gwcTid = id;
+      host.dataset.gwcTid = id;
 
       if (cacheKey) {
         if (tableWidthCache.size > 60) {
@@ -977,10 +982,11 @@
         }
       }
       for (const tbl of touchedTables) {
-        if (tbl.dataset.gwcTid) continue;
+        const host = getTableHost(tbl);
+        if (host.dataset.gwcTid) continue;
         const key = getTableCacheKey(tbl);
         if (key && tableWidthCache.has(key)) {
-          tbl.dataset.gwcTid = tableWidthCache.get(key).id;
+          host.dataset.gwcTid = tableWidthCache.get(key).id;
         } else {
           needDeferredCheck = true;
         }
