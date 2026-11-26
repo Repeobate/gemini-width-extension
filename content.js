@@ -1,9 +1,10 @@
 (() => {
-  const INSTANCE_VERSION = '2.3.3';
+  const INSTANCE_VERSION = '2.3.4';
   if (window.__GWC_INSTANCE_VERSION__ === INSTANCE_VERSION) return;
   window.__GWC_INSTANCE_VERSION__ = INSTANCE_VERSION;
 
   const STYLE_ID = 'gemini-width-controller-style';
+  const TABLE_COL_STYLE_ID = 'gemini-width-controller-table-cols';
   const INPUT_TRIGGER_ID = 'gwc-input-trigger';
   const SIDEBAR_TRIGGER_ID = 'gwc-sidebar-trigger';
   const INPUT_OPEN_CLASS = 'gwc-input-open';
@@ -20,11 +21,9 @@
 
   let currentState = { ...DEFAULTS };
   let tableTimer = null;
-  // 缓存已定型表格的列宽（key -> number[]），若流式输出后续段落时 Angular 重建了前面的 table DOM，可 0ms 同步还原避免跳动
+  // 缓存已定型表格的列宽规则（key -> { id, widths }），纯 CSS nth-child 注入，绝不往 Angular 的 <table> 里插子节点
   const tableWidthCache = new Map();
-  // 记录每个正在流式生成的表格的最后变动时间，避免每吐几个字就重算列宽导致疯狂跳动
-  const tableLastChange = new WeakMap();
-  const tableLastSig = new WeakMap();
+  let tableIdSeq = 0;
   let hideInputTimer = null;
   let hideSidebarTimer = null;
   let inputResizeObserver = null;
@@ -184,14 +183,23 @@
 
     if (smartTableCols) {
       css += `
-        /* 6. 智能列宽模式 */
-        table[data-gwc-smart-cols="1"] {
+        /* 6. 智能列宽模式：从首帧即锁定 table-layout: fixed，彻底杜绝流式吐字时浏览器自动重算列宽导致的跳动 */
+        .markdown-main-panel table,
+        .markdown table,
+        table-block table,
+        .table-block table {
           table-layout: fixed !important;
           width: 100% !important;
         }
 
-        table[data-gwc-smart-cols="1"] th,
-        table[data-gwc-smart-cols="1"] td {
+        .markdown-main-panel table th,
+        .markdown-main-panel table td,
+        .markdown table th,
+        .markdown table td,
+        table-block table th,
+        table-block table td,
+        .table-block table th,
+        .table-block table td {
           overflow-wrap: break-word !important;
           white-space: normal !important;
         }
@@ -600,18 +608,37 @@
     return Math.min(maxLen, 28);
   }
 
-  function clearSmartColsForTable(table) {
-    if (!table) return;
-    const cg = table.querySelector(':scope > colgroup[data-gwc-colgroup="1"]');
-    if (cg) cg.remove();
-    delete table.dataset.gwcSmartCols;
-    delete table.dataset.gwcColSig;
+  function clearAllSmartCols() {
+    const styleEl = document.getElementById(TABLE_COL_STYLE_ID);
+    if (styleEl) styleEl.remove();
+    const tables = document.querySelectorAll('table[data-gwc-tid]');
+    for (const table of tables) {
+      delete table.dataset.gwcTid;
+    }
   }
 
-  function clearAllSmartCols() {
-    const tables = document.querySelectorAll('table[data-gwc-smart-cols="1"]');
-    for (const table of tables) {
-      clearSmartColsForTable(table);
+  function flushTableColStyles() {
+    if (!currentState.smartTableCols || tableWidthCache.size === 0) {
+      const old = document.getElementById(TABLE_COL_STYLE_ID);
+      if (old) old.remove();
+      return;
+    }
+
+    let css = '';
+    for (const { id, widths } of tableWidthCache.values()) {
+      for (let i = 0; i < widths.length; i++) {
+        css += `table[data-gwc-tid="${id}"] tr:first-child > :nth-child(${i + 1}) { width: ${widths[i]}% !important; }\n`;
+      }
+    }
+
+    let styleEl = document.getElementById(TABLE_COL_STYLE_ID);
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = TABLE_COL_STYLE_ID;
+      (document.head || document.documentElement).appendChild(styleEl);
+    }
+    if (styleEl.textContent !== css) {
+      styleEl.textContent = css;
     }
   }
 
@@ -720,7 +747,7 @@
     if (!rows || rows.length < 2) return '';
     const r0 = (rows[0].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     const r1 = (rows[1].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    return `${rows.length}|${rows[0].cells.length}|${r0}|${r1}`;
+    return `${rows[0].cells.length}|${r0}|${r1}`;
   }
 
   function isTableCompleted(table) {
@@ -742,28 +769,13 @@
     return false;
   }
 
-  function writeColgroup(table, widths, sig) {
-    let colgroup = table.querySelector(':scope > colgroup[data-gwc-colgroup="1"]');
-    if (!colgroup) {
-      colgroup = document.createElement('colgroup');
-      colgroup.dataset.gwcColgroup = '1';
-      table.insertBefore(colgroup, table.firstChild);
-    }
-
-    while (colgroup.children.length > widths.length) {
-      colgroup.lastElementChild.remove();
-    }
-    for (let i = 0; i < widths.length; i++) {
-      let col = colgroup.children[i];
-      if (!col) {
-        col = document.createElement('col');
-        colgroup.appendChild(col);
-      }
-      col.style.width = `${widths[i]}%`;
-    }
-
-    table.dataset.gwcSmartCols = '1';
-    table.dataset.gwcColSig = sig;
+  function isGeminiStreaming() {
+    // 检测 Gemini 是否正在流式输出（存在停止生成按钮）
+    return Boolean(
+      document.querySelector(
+        'button[aria-label*="停止"], button[aria-label*="Stop"], .stop-icon, mat-icon[data-mat-icon-name="stop"]'
+      )
+    );
   }
 
   function applySmartTableCols(forceNow = false) {
@@ -772,69 +784,51 @@
       return;
     }
 
-    const now = Date.now();
+    const streaming = isGeminiStreaming();
     const tables = document.querySelectorAll(
       '.markdown-main-panel table, .markdown table, table-block table, .table-block table'
     );
 
-    let hasPendingStreamingTable = false;
+    let cssUpdated = false;
 
     for (const table of tables) {
-      const textLen = (table.textContent || '').length;
-      const rowCount = table.rows ? table.rows.length : 0;
-      const sig = `${rowCount}:${textLen}`;
+      // 已锁定过的表格不再重复计算，彻底杜绝后续流式输出干扰前面的表格
+      if (table.dataset.gwcTid) continue;
 
-      if (table.dataset.gwcColSig === sig && table.dataset.gwcSmartCols === '1') {
-        continue;
-      }
-
-      // 优先命中缓存：如果后续输出导致 Angular 重建了已完成的表格，0ms 直接套用原列宽，绝不跳动
       const cacheKey = getTableCacheKey(table);
       if (cacheKey && tableWidthCache.has(cacheKey)) {
-        writeColgroup(table, tableWidthCache.get(cacheKey), sig);
+        table.dataset.gwcTid = tableWidthCache.get(cacheKey).id;
         continue;
       }
 
-      // 判断表格是否还在流式生成中
+      // 仅当表格已生成完毕（后面已有新段落，或整轮回答已停止流式输出，或用户主动刷新/切换开关）才计算一次
       const completed = isTableCompleted(table);
-      if (!forceNow && !completed) {
-        const prevSig = tableLastSig.get(table);
-        if (prevSig !== sig) {
-          tableLastSig.set(table, sig);
-          tableLastChange.set(table, now);
-          hasPendingStreamingTable = true;
-          continue;
-        }
-        const lastTs = tableLastChange.get(table) || 0;
-        if (now - lastTs < 850) {
-          hasPendingStreamingTable = true;
-          continue;
-        }
+      if (!forceNow && !completed && streaming) {
+        continue;
       }
 
       const widths = computeBalancedColumnWidths(table);
-      if (!widths) {
-        clearSmartColsForTable(table);
-        continue;
-      }
+      if (!widths) continue;
 
-      writeColgroup(table, widths, sig);
+      const id = `t${++tableIdSeq}`;
+      table.dataset.gwcTid = id;
 
       if (cacheKey) {
         if (tableWidthCache.size > 60) {
           const firstKey = tableWidthCache.keys().next().value;
           tableWidthCache.delete(firstKey);
         }
-        tableWidthCache.set(cacheKey, widths);
+        tableWidthCache.set(cacheKey, { id, widths });
       }
+      cssUpdated = true;
     }
 
-    if (hasPendingStreamingTable) {
-      scheduleSmartTableUpdate(900);
+    if (cssUpdated) {
+      flushTableColStyles();
     }
   }
 
-  function scheduleSmartTableUpdate(delay = 850) {
+  function scheduleSmartTableUpdate(delay = 400) {
     if (!currentState.smartTableCols) return;
     if (tableTimer) clearTimeout(tableTimer);
     tableTimer = setTimeout(() => {
@@ -955,10 +949,6 @@
       if (!currentState.smartTableCols) return;
       let needDeferredCheck = false;
       for (const m of mutations) {
-        const t = m.target;
-        if (t && t.nodeType === 1 && (t.tagName === 'TABLE' || t.closest('table'))) {
-          needDeferredCheck = true;
-        }
         if (m.addedNodes && m.addedNodes.length > 0) {
           for (const n of m.addedNodes) {
             if (n.nodeType !== 1) continue;
@@ -969,22 +959,23 @@
                   ? Array.from(n.querySelectorAll('table'))
                   : [];
             if (addedTables.length > 0) {
-              // 若是已缓存表格被 Angular 重建，绘制前 0ms 同步恢复列宽，彻底不跳动
               for (const tbl of addedTables) {
                 const key = getTableCacheKey(tbl);
                 if (key && tableWidthCache.has(key)) {
-                  const sig = `${tbl.rows.length}:${(tbl.textContent || '').length}`;
-                  writeColgroup(tbl, tableWidthCache.get(key), sig);
+                  tbl.dataset.gwcTid = tableWidthCache.get(key).id;
                 } else {
                   needDeferredCheck = true;
                 }
               }
+            } else {
+              // 表格之后新增了后续段落/标题，触发一次检查以锁定前面刚结束的表格
+              needDeferredCheck = true;
             }
           }
         }
       }
       if (needDeferredCheck) {
-        scheduleSmartTableUpdate(850);
+        scheduleSmartTableUpdate(450);
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
