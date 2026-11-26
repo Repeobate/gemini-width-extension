@@ -1,5 +1,5 @@
 (() => {
-  const INSTANCE_VERSION = '2.3.7';
+  const INSTANCE_VERSION = '1.1.0';
   if (window.__GWC_INSTANCE_VERSION__ === INSTANCE_VERSION) return;
   window.__GWC_INSTANCE_VERSION__ = INSTANCE_VERSION;
 
