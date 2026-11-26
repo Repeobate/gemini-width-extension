@@ -1,5 +1,5 @@
 (() => {
-  const INSTANCE_VERSION = '2.3.4';
+  const INSTANCE_VERSION = '2.3.5';
   if (window.__GWC_INSTANCE_VERSION__ === INSTANCE_VERSION) return;
   window.__GWC_INSTANCE_VERSION__ = INSTANCE_VERSION;
 
@@ -181,9 +181,9 @@
       `;
     }
 
-    if (smartTableCols) {
+    if (enabled || smartTableCols) {
       css += `
-        /* 6. 智能列宽模式：从首帧即锁定 table-layout: fixed，彻底杜绝流式吐字时浏览器自动重算列宽导致的跳动 */
+        /* 6. 强制 table-layout: fixed，彻底根治 Gemini 流式重建 <table> 时原生 table-layout: auto 列宽反复震荡 */
         .markdown-main-panel table,
         .markdown table,
         table-block table,
@@ -948,30 +948,41 @@
       }
       if (!currentState.smartTableCols) return;
       let needDeferredCheck = false;
+      const touchedTables = new Set();
       for (const m of mutations) {
+        if (m.target && m.target.nodeType === 1) {
+          const parentTbl = m.target.closest && m.target.closest('table');
+          if (parentTbl) touchedTables.add(parentTbl);
+        }
         if (m.addedNodes && m.addedNodes.length > 0) {
           for (const n of m.addedNodes) {
             if (n.nodeType !== 1) continue;
-            const addedTables =
-              n.tagName === 'TABLE'
-                ? [n]
-                : n.querySelectorAll
-                  ? Array.from(n.querySelectorAll('table'))
-                  : [];
-            if (addedTables.length > 0) {
-              for (const tbl of addedTables) {
-                const key = getTableCacheKey(tbl);
-                if (key && tableWidthCache.has(key)) {
-                  tbl.dataset.gwcTid = tableWidthCache.get(key).id;
+            if (n.tagName === 'TABLE') {
+              touchedTables.add(n);
+            } else {
+              const innerTables = n.querySelectorAll ? n.querySelectorAll('table') : [];
+              if (innerTables.length > 0) {
+                for (const tbl of innerTables) touchedTables.add(tbl);
+              } else {
+                const ancTbl = n.closest && n.closest('table');
+                if (ancTbl) {
+                  touchedTables.add(ancTbl);
                 } else {
+                  // 表格之后新增了后续段落/标题，触发一次检查以锁定前面刚结束的表格
                   needDeferredCheck = true;
                 }
               }
-            } else {
-              // 表格之后新增了后续段落/标题，触发一次检查以锁定前面刚结束的表格
-              needDeferredCheck = true;
             }
           }
+        }
+      }
+      for (const tbl of touchedTables) {
+        if (tbl.dataset.gwcTid) continue;
+        const key = getTableCacheKey(tbl);
+        if (key && tableWidthCache.has(key)) {
+          tbl.dataset.gwcTid = tableWidthCache.get(key).id;
+        } else {
+          needDeferredCheck = true;
         }
       }
       if (needDeferredCheck) {
