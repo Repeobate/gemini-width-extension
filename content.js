@@ -1,5 +1,5 @@
 (() => {
-  const INSTANCE_VERSION = '2.3.2';
+  const INSTANCE_VERSION = '2.3.3';
   if (window.__GWC_INSTANCE_VERSION__ === INSTANCE_VERSION) return;
   window.__GWC_INSTANCE_VERSION__ = INSTANCE_VERSION;
 
@@ -20,6 +20,11 @@
 
   let currentState = { ...DEFAULTS };
   let tableTimer = null;
+  // 缓存已定型表格的列宽（key -> number[]），若流式输出后续段落时 Angular 重建了前面的 table DOM，可 0ms 同步还原避免跳动
+  const tableWidthCache = new Map();
+  // 记录每个正在流式生成的表格的最后变动时间，避免每吐几个字就重算列宽导致疯狂跳动
+  const tableLastChange = new WeakMap();
+  const tableLastSig = new WeakMap();
   let hideInputTimer = null;
   let hideSidebarTimer = null;
   let inputResizeObserver = null;
@@ -710,22 +715,101 @@
     return rounded;
   }
 
-  function applySmartTableCols() {
+  function getTableCacheKey(table) {
+    const rows = table.rows;
+    if (!rows || rows.length < 2) return '';
+    const r0 = (rows[0].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const r1 = (rows[1].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    return `${rows.length}|${rows[0].cells.length}|${r0}|${r1}`;
+  }
+
+  function isTableCompleted(table) {
+    // 若表格所在块后面已经有后续正文/标题节点，说明该表格已完全生成完毕
+    const block =
+      table.closest('table-block, .table-block, .table-block-component') || table;
+    let cur = block;
+    while (cur && cur.parentElement) {
+      const parent = cur.parentElement;
+      if (
+        parent.classList.contains('markdown-main-panel') ||
+        parent.classList.contains('markdown') ||
+        parent.tagName === 'STRUCTURED-CONTENT-CONTAINER'
+      ) {
+        return Boolean(cur.nextElementSibling);
+      }
+      cur = parent;
+    }
+    return false;
+  }
+
+  function writeColgroup(table, widths, sig) {
+    let colgroup = table.querySelector(':scope > colgroup[data-gwc-colgroup="1"]');
+    if (!colgroup) {
+      colgroup = document.createElement('colgroup');
+      colgroup.dataset.gwcColgroup = '1';
+      table.insertBefore(colgroup, table.firstChild);
+    }
+
+    while (colgroup.children.length > widths.length) {
+      colgroup.lastElementChild.remove();
+    }
+    for (let i = 0; i < widths.length; i++) {
+      let col = colgroup.children[i];
+      if (!col) {
+        col = document.createElement('col');
+        colgroup.appendChild(col);
+      }
+      col.style.width = `${widths[i]}%`;
+    }
+
+    table.dataset.gwcSmartCols = '1';
+    table.dataset.gwcColSig = sig;
+  }
+
+  function applySmartTableCols(forceNow = false) {
     if (!currentState.smartTableCols) {
       clearAllSmartCols();
       return;
     }
 
+    const now = Date.now();
     const tables = document.querySelectorAll(
       '.markdown-main-panel table, .markdown table, table-block table, .table-block table'
     );
+
+    let hasPendingStreamingTable = false;
 
     for (const table of tables) {
       const textLen = (table.textContent || '').length;
       const rowCount = table.rows ? table.rows.length : 0;
       const sig = `${rowCount}:${textLen}`;
+
       if (table.dataset.gwcColSig === sig && table.dataset.gwcSmartCols === '1') {
         continue;
+      }
+
+      // 优先命中缓存：如果后续输出导致 Angular 重建了已完成的表格，0ms 直接套用原列宽，绝不跳动
+      const cacheKey = getTableCacheKey(table);
+      if (cacheKey && tableWidthCache.has(cacheKey)) {
+        writeColgroup(table, tableWidthCache.get(cacheKey), sig);
+        continue;
+      }
+
+      // 判断表格是否还在流式生成中
+      const completed = isTableCompleted(table);
+      if (!forceNow && !completed) {
+        const prevSig = tableLastSig.get(table);
+        if (prevSig !== sig) {
+          tableLastSig.set(table, sig);
+          tableLastChange.set(table, now);
+          hasPendingStreamingTable = true;
+          continue;
+        }
+        const lastTs = tableLastChange.get(table) || 0;
+        if (now - lastTs < 850) {
+          hasPendingStreamingTable = true;
+          continue;
+        }
       }
 
       const widths = computeBalancedColumnWidths(table);
@@ -734,37 +818,29 @@
         continue;
       }
 
-      let colgroup = table.querySelector(':scope > colgroup[data-gwc-colgroup="1"]');
-      if (!colgroup) {
-        colgroup = document.createElement('colgroup');
-        colgroup.dataset.gwcColgroup = '1';
-        table.insertBefore(colgroup, table.firstChild);
-      }
+      writeColgroup(table, widths, sig);
 
-      while (colgroup.children.length > widths.length) {
-        colgroup.lastElementChild.remove();
-      }
-      for (let i = 0; i < widths.length; i++) {
-        let col = colgroup.children[i];
-        if (!col) {
-          col = document.createElement('col');
-          colgroup.appendChild(col);
+      if (cacheKey) {
+        if (tableWidthCache.size > 60) {
+          const firstKey = tableWidthCache.keys().next().value;
+          tableWidthCache.delete(firstKey);
         }
-        col.style.width = `${widths[i]}%`;
+        tableWidthCache.set(cacheKey, widths);
       }
+    }
 
-      table.dataset.gwcSmartCols = '1';
-      table.dataset.gwcColSig = sig;
+    if (hasPendingStreamingTable) {
+      scheduleSmartTableUpdate(900);
     }
   }
 
-  function scheduleSmartTableUpdate() {
+  function scheduleSmartTableUpdate(delay = 850) {
     if (!currentState.smartTableCols) return;
     if (tableTimer) clearTimeout(tableTimer);
     tableTimer = setTimeout(() => {
       tableTimer = null;
-      applySmartTableCols();
-    }, 260);
+      applySmartTableCols(false);
+    }, delay);
   }
 
   function applySettings(raw) {
@@ -821,7 +897,7 @@
     }
 
     if (document.body) {
-      applySmartTableCols();
+      applySmartTableCols(true);
       ensureSidebarTrigger();
       ensureInputTriggerBar();
     }
@@ -877,25 +953,38 @@
         ensureInputTriggerBar();
       }
       if (!currentState.smartTableCols) return;
+      let needDeferredCheck = false;
       for (const m of mutations) {
         const t = m.target;
         if (t && t.nodeType === 1 && (t.tagName === 'TABLE' || t.closest('table'))) {
-          scheduleSmartTableUpdate();
-          return;
+          needDeferredCheck = true;
         }
         if (m.addedNodes && m.addedNodes.length > 0) {
           for (const n of m.addedNodes) {
-            if (
-              n.nodeType === 1 &&
-              (n.tagName === 'TABLE' ||
-                n.tagName === 'TABLE-BLOCK' ||
-                (n.querySelector && n.querySelector('table')))
-            ) {
-              scheduleSmartTableUpdate();
-              return;
+            if (n.nodeType !== 1) continue;
+            const addedTables =
+              n.tagName === 'TABLE'
+                ? [n]
+                : n.querySelectorAll
+                  ? Array.from(n.querySelectorAll('table'))
+                  : [];
+            if (addedTables.length > 0) {
+              // 若是已缓存表格被 Angular 重建，绘制前 0ms 同步恢复列宽，彻底不跳动
+              for (const tbl of addedTables) {
+                const key = getTableCacheKey(tbl);
+                if (key && tableWidthCache.has(key)) {
+                  const sig = `${tbl.rows.length}:${(tbl.textContent || '').length}`;
+                  writeColgroup(tbl, tableWidthCache.get(key), sig);
+                } else {
+                  needDeferredCheck = true;
+                }
+              }
             }
           }
         }
+      }
+      if (needDeferredCheck) {
+        scheduleSmartTableUpdate(850);
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
